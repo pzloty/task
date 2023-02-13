@@ -1,18 +1,40 @@
 package taskfile
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/davecgh/go-spew/spew"
+)
+
+type MergeOptions struct {
+	Namespace string
+	Dir       string
+	Internal  bool
+	Aliases   []string
+	Vars      *Vars
+}
+
+var (
+	// ErrIncludedTaskfilesCantHaveDotenvs is returned when a included Taskfile contains dotenvs
+	ErrIncludedTaskfilesCantHaveDotenvs = errors.New("task: Included Taskfiles can't have dotenv declarations. Please, move the dotenv declaration to the main Taskfile")
 )
 
 // NamespaceSeparator contains the character that separates namespaces
 const NamespaceSeparator = ":"
 
 // Merge merges the second Taskfile into the first
-func Merge(t1, t2 *Taskfile, includedTaskfile *IncludedTaskfile, namespaces ...string) error {
+func Merge(t1, t2 *Taskfile, opts *MergeOptions) error {
 	if !t1.Version.Equal(t2.Version) {
 		return fmt.Errorf(`task: Taskfiles versions should match. First is "%s" but second is "%s"`, t1.Version, t2.Version)
 	}
+	if t1.Version.Compare(V3) >= 0 && len(t2.Dotenv) > 0 {
+		return ErrIncludedTaskfilesCantHaveDotenvs
+	}
+
+	fmt.Println("###################################################################")
+	spew.Dump(opts)
 
 	if t2.Expansions != 0 && t2.Expansions != 2 {
 		t1.Expansions = t2.Expansions
@@ -40,23 +62,26 @@ func Merge(t1, t2 *Taskfile, includedTaskfile *IncludedTaskfile, namespaces ...s
 
 		// Set the task to internal if EITHER the included task or the included
 		// taskfile are marked as internal
-		task.Internal = task.Internal || (includedTaskfile != nil && includedTaskfile.Internal)
+		task.Internal = task.Internal || (opts != nil && opts.Internal)
 
 		// Add namespaces to dependencies, commands and aliases
+		fmt.Println(task.Task)
 		for _, dep := range task.Deps {
-			dep.Task = taskNameWithNamespace(dep.Task, namespaces...)
+			fmt.Println("  ", taskNameWithNamespace(dep.Task, opts.Namespace))
+			dep.Task = taskNameWithNamespace(dep.Task, opts.Namespace)
 		}
 		for _, cmd := range task.Cmds {
 			if cmd != nil && cmd.Task != "" {
-				cmd.Task = taskNameWithNamespace(cmd.Task, namespaces...)
+				cmd.Task = taskNameWithNamespace(cmd.Task, opts.Namespace)
 			}
 		}
 		for i, alias := range task.Aliases {
-			task.Aliases[i] = taskNameWithNamespace(alias, namespaces...)
+			task.Aliases[i] = taskNameWithNamespace(alias, opts.Namespace)
 		}
+
 		// Add namespace aliases
-		if includedTaskfile != nil {
-			for _, namespaceAlias := range includedTaskfile.Aliases {
+		if opts != nil {
+			for _, namespaceAlias := range opts.Aliases {
 				task.Aliases = append(task.Aliases, taskNameWithNamespace(task.Task, namespaceAlias))
 				for _, alias := range v.Aliases {
 					task.Aliases = append(task.Aliases, taskNameWithNamespace(alias, namespaceAlias))
@@ -65,15 +90,15 @@ func Merge(t1, t2 *Taskfile, includedTaskfile *IncludedTaskfile, namespaces ...s
 		}
 
 		// Add the task to the merged taskfile
-		t1.Tasks[taskNameWithNamespace(k, namespaces...)] = task
+		t1.Tasks[taskNameWithNamespace(k, opts.Namespace)] = task
 	}
 
 	return nil
 }
 
-func taskNameWithNamespace(taskName string, namespaces ...string) string {
+func taskNameWithNamespace(taskName string, namespace string) string {
 	if strings.HasPrefix(taskName, ":") {
 		return strings.TrimPrefix(taskName, ":")
 	}
-	return strings.Join(append(namespaces, taskName), NamespaceSeparator)
+	return fmt.Sprintf("%s%s%s", namespace, NamespaceSeparator, taskName)
 }

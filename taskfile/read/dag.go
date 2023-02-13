@@ -9,8 +9,6 @@ import (
 	"github.com/dominikbraun/graph/draw"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/go-task/task/v3/internal/execext"
-	"github.com/go-task/task/v3/internal/filepathext"
 	"github.com/go-task/task/v3/internal/templater"
 	"github.com/go-task/task/v3/taskfile"
 )
@@ -100,6 +98,7 @@ func (dag *TaskfileDAG) addIncludedTaskfiles(node *readerNode) error {
 
 	// Loop over each included taskfile
 	for _, key := range vertex.taskfile.Includes.Keys {
+		namespace := key
 
 		// Get the map entry and skip if it doesn't exist
 		includedTaskfile, ok := vertex.taskfile.Includes.Mapping[key]
@@ -142,8 +141,16 @@ func (dag *TaskfileDAG) addIncludedTaskfiles(node *readerNode) error {
 				return err
 			}
 
+			mergeOptions := &taskfile.MergeOptions{
+				Namespace: namespace,
+				Dir:       includedTaskfile.Dir,
+				Internal:  includedTaskfile.Internal,
+				Aliases:   includedTaskfile.Aliases,
+				Vars:      includedTaskfile.Vars,
+			}
+
 			// Create an edge between the Taskfiles
-			return dag.AddEdge(node.path(), includedTaskfileNode.path())
+			return dag.AddEdge(node.path(), includedTaskfileNode.path(), graph.EdgeData(mergeOptions))
 		})
 	}
 
@@ -151,20 +158,143 @@ func (dag *TaskfileDAG) addIncludedTaskfiles(node *readerNode) error {
 	return g.Wait()
 }
 
-func resolvePath(baseDir, path string) (string, error) {
-	path, err := execext.Expand(path)
+func (dag *TaskfileDAG) Merge() (*taskfile.Taskfile, error) {
+
+	// fmt.Println("\n||||||||||||||||||||||||||| Merge |||||||||||||||||||||||||||||")
+	// fmt.Println()
+
+	hashes, err := graph.TopologicalSort(dag.Graph)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	if filepath.IsAbs(path) {
-		return path, nil
-	}
-
-	result, err := filepath.Abs(filepathext.SmartJoin(baseDir, path))
+	predecessorMap, err := dag.PredecessorMap()
 	if err != nil {
-		return "", fmt.Errorf("task: error resolving path %s relative to %s: %w", path, baseDir, err)
+		return nil, err
 	}
 
-	return result, nil
+	for i := len(hashes) - 1; i >= 0; i-- {
+		hash := hashes[i]
+		// fmt.Println()
+		// fmt.Println("#############################################")
+		// fmt.Println("hash:", hash)
+		// fmt.Println()
+
+		// Get the current vertex
+		vertex, err := dag.Vertex(hash)
+		if err != nil {
+			return nil, err
+		}
+
+		// Create an error group to wait for all the included Taskfiles to be merged with all its parents
+		var g errgroup.Group
+
+		// Loop over each adjacent edge
+		for _, edge := range predecessorMap[hash] {
+
+			// TODO: Enable goroutines
+			// Start a goroutine to process each included Taskfile
+			// g.Go(
+			err := func() error {
+
+				// fmt.Printf("merging:\n- %s into\n- %s\n", edge.Target, edge.Source)
+
+				// Get the child vertex
+				predecessorVertex, err := dag.Vertex(edge.Source)
+				if err != nil {
+					return err
+				}
+
+				// Get the merge options
+				mergeOptions, ok := edge.Properties.Data.(*taskfile.MergeOptions)
+				if !ok {
+					return fmt.Errorf("task: Failed to get merge options")
+				}
+				// spew.Dump(mergeOptions)
+
+				// if mergeOptions.Vars != nil {
+
+				// 	if includedTask.AdvancedImport {
+				// 		dir, err := includedTask.FullDirPath()
+				// 		if err != nil {
+				// 			return err
+				// 		}
+				// 	for k, v := range childVertex.taskfile.Vars.Mapping {
+				// 		o := v
+				// 		o.Dir = dir
+				// 		childVertex.taskfile.Vars.Mapping[k] = o
+				// 	}
+				// 	for k, v := range childVertex.taskfile.Env.Mapping {
+				// 		o := v
+				// 		o.Dir = dir
+				// 		childVertex.taskfile.Env.Mapping[k] = o
+				// 	}
+				// }
+
+				// 	for _, task := range includedTaskfile.Tasks {
+				// 		task.Dir = filepathext.SmartJoin(dir, task.Dir)
+				// 		task.IncludeVars = includedTask.Vars
+				// 		task.IncludedTaskfileVars = includedTaskfile.Vars
+				// 		task.IncludedTaskfile = &includedTask
+				// 	}
+				// }
+
+				// Merge the included Taskfile into the parent Taskfile
+				if err := taskfile.Merge(
+					predecessorVertex.taskfile,
+					vertex.taskfile,
+					mergeOptions,
+				); err != nil {
+					return err
+				}
+
+				// fmt.Printf("%s -> %s\n", vertex.path, predecessorVertex.path)
+				// spew.Dump(mergeOptions)
+
+				// If the included Taskfile has a default task and the parent
+				// namespace has no task with a matching name, we can add an alias
+				// so that the user can run the included Taskfile's default task
+				// without specifying its full name. If the parent namespace has
+				// aliases, we add another alias for each of them.
+				if vertex.taskfile.Tasks["default"] != nil && predecessorVertex.taskfile.Tasks[mergeOptions.Namespace] == nil {
+					defaultTaskName := fmt.Sprintf("%s:default", mergeOptions.Namespace)
+					predecessorVertex.taskfile.Tasks[defaultTaskName].Aliases = append(predecessorVertex.taskfile.Tasks[defaultTaskName].Aliases, mergeOptions.Namespace)
+					predecessorVertex.taskfile.Tasks[defaultTaskName].Aliases = append(predecessorVertex.taskfile.Tasks[defaultTaskName].Aliases, mergeOptions.Aliases...)
+				}
+
+				// TODO: Do we actually need to do this? Might be nice to keep the edge anyway
+				// Remove the edge from the DAG
+				// if err := dag.RemoveEdge(predecessorVertex.path, vertex.path); err != nil {
+				// 	return err
+				// }
+
+				return nil
+			}()
+			if err != nil {
+				return nil, err
+			}
+			// )
+		}
+
+		// Wait for all the go routines to finish
+		if err := g.Wait(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Get the root vertex
+	rootVertex, err := dag.Vertex(hashes[0])
+	if err != nil {
+		return nil, err
+	}
+
+	for name, task := range rootVertex.taskfile.Tasks {
+		if task == nil {
+			task = &taskfile.Task{}
+			rootVertex.taskfile.Tasks[name] = task
+		}
+		task.Task = name
+	}
+
+	return rootVertex.taskfile, nil
 }

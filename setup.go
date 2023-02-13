@@ -86,6 +86,28 @@ func (e *Executor) readTaskfile() error {
 		return err
 	}
 
+	if e.Taskfile, err = dag.Merge(); err != nil {
+		return err
+	}
+
+	// tr, err := graph.TransitiveReduction(dag.Graph)
+	// if err != nil {
+	// 	return err
+	// }
+
+	// dagTr := read.TaskfileDAG{
+	// 	Graph: tr,
+	// }
+
+	// if err := dagTr.Visualize("./taskfile-dag-tr.gv"); err != nil {
+	// 	return err
+	// }
+
+	// spew.Dump(e.Taskfile)
+
+	// TODO: Remove
+	// os.Exit(0)
+
 	return nil
 }
 

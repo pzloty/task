@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
+
 	"github.com/go-task/task/v3/internal/compiler"
 	"github.com/go-task/task/v3/internal/execext"
 	"github.com/go-task/task/v3/internal/logger"
@@ -220,6 +222,8 @@ func (e *Executor) runDeps(ctx context.Context, t *taskfile.Task) error {
 
 	reacquire := e.releaseConcurrencyLimit()
 	defer reacquire()
+
+	spew.Dump(t.Deps)
 
 	for _, d := range t.Deps {
 		d := d
