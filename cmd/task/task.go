@@ -72,6 +72,7 @@ func main() {
 		output      taskfile.Output
 		color       bool
 		interval    time.Duration
+		global      bool
 	)
 
 	pflag.BoolVar(&versionFlag, "version", false, "show Task version")
@@ -97,6 +98,7 @@ func main() {
 	pflag.BoolVarP(&color, "color", "c", true, "colored output. Enabled by default. Set flag to false or use NO_COLOR=1 to disable")
 	pflag.IntVarP(&concurrency, "concurrency", "C", 0, "limit number tasks to run concurrently")
 	pflag.DurationVarP(&interval, "interval", "I", 0, "interval to watch for changes")
+	pflag.BoolVarP(&global, "global", "g", false, "runs global Taskfile, from $HOME/Taskfile.{yml,yaml}")
 	pflag.Parse()
 
 	if versionFlag {
@@ -120,6 +122,14 @@ func main() {
 		return
 	}
 
+	if global {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatal("task: failed to get user home directory: %w", err)
+			return
+		}
+		dir = home
+	}
 	if dir != "" && entrypoint != "" {
 		log.Fatal("task: You can't set both --dir and --taskfile")
 		return
